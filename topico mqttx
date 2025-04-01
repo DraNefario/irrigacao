@@ -1,0 +1,2 @@
+topico mqttx = controle_temperatura_umidade
+mensagem = obter_temperatura_umidade
