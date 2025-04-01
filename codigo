@@ -1,0 +1,117 @@
+import dht
+import network
+import time
+from machine import Pin, PWM
+from umqtt.simple import MQTTClient
+
+# Configuração do sensor DHT11
+sensor_dht = dht.DHT11(Pin(2))
+
+# Configuração do LDR
+sensor_ldr = Pin(5, Pin.IN)  # Sensor no pino GPIO 15
+
+# Configuração do Wi-Fi
+SSID = "Visitantes"
+PASSWORD = ""
+
+# Configuração do MQTT
+MQTT_BROKER = "broker.emqx.io"
+MQTT_PORT = 1883
+CLIENT_ID = "ESP32_MQTT"
+
+# Configuração do Servo Motor (PWM no GPIO 5)
+servo1 = PWM(Pin(4), freq=50)
+servo2 = PWM(Pin(15), freq=50) # Frequência típica de servos é 50Hz
+
+def conecta_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(SSID, PASSWORD)
+
+    print("Conectando ao Wi-Fi...")
+    for _ in range(10):  # Tenta conectar por 10 segundos
+        if wlan.isconnected():
+            print("Conectado!", wlan.ifconfig())
+            return True
+        time.sleep(1)
+
+    print("Falha ao conectar :(")
+    return False
+
+def conecta_mqtt():
+    client = MQTTClient(CLIENT_ID, MQTT_BROKER, MQTT_PORT)
+    client.connect()
+    print(f"Conectado ao MQTT Broker {MQTT_BROKER}")
+    return client
+
+def control_servo1(setpoint):
+    pulse_width = int(40 + (setpoint / 180) * (115 - 40))
+    print(pulse_width)
+    servo1.duty(pulse_width)
+    time.sleep(1)
+
+def control_servo2(setpoint):
+    pulse_width = int(40 + (setpoint / 180) * (115 - 40))
+    servo2.duty(pulse_width)
+    time.sleep(1)
+
+def mensagem_callback(topic, msg):
+    print(f"Mensagem recebida no tópico {topic.decode()}: {msg.decode()}")
+    if msg.decode() == "obter_temperatura_umidade":
+        sensor_dht.measure()
+        temp = sensor_dht.temperature()
+        hum = sensor_dht.humidity()
+        client.publish("TEMP", str(temp))
+        client.publish("HUM", str(hum))
+        print(f"Temperatura: {temp}°C, Umidade: {hum}%")
+        
+        # Lógica de irrigação
+        if (30 < hum < 60 ):
+            print("Irrigando!")
+            control_servo1(90)  # Irrigar: abre o servo a 90 graus
+        elif ( hum > 80):
+            print("Não irrigar!")
+            control_servo1(0)  # Não irrigar: mantém o servo fechado (0 graus)
+        else:
+            print("Irrigando!")
+            control_servo1(90)  # Irrigar: abre o servo a 90 graus
+
+def conecta_mqtt_e_subscribe():
+    client = conecta_mqtt()
+    client.set_callback(mensagem_callback)
+    client.subscribe("controle_temperatura_umidade")
+    return client
+
+# Conectar ao Wi-Fi antes de iniciar MQTT
+if not conecta_wifi():
+    raise Exception("Não foi possível conectar ao Wi-Fi")
+
+# Conectar ao MQTT e configurar callback
+try:
+    client = conecta_mqtt_e_subscribe()
+    print("Aguardando mensagens MQTT...")
+
+    while True:
+        # Solicita a leitura de temperatura e umidade
+        client.publish("controle_temperatura_umidade", "obter_temperatura_umidade")
+        time.sleep(1)
+        client.check_msg()  # Processa as mensagens recebidas
+
+        # Medir o LDR (sensor de luz)
+        ldr_value = sensor_ldr.value()
+
+        if ldr_value == 1:
+            control_servo2(90)
+            print("levantar cerca")
+        else:
+            control_servo2(0)
+            print("abaixar cerca")
+
+        time.sleep(5)  # Pequeno delay para evitar leituras muito rápidas
+
+except Exception as e:
+    print("Erro MQTT:", e)
+
+finally:
+    client.disconnect()
+
